@@ -192,17 +192,6 @@ npm run build
    - Staging requires manual approval
    - Production uses canary deployment (10% → 100%)
 
-## Project Phases (16 Weeks)
-
-- **Phase 1** (Weeks 1-2): Foundation - ✅ COMPLETE
-- **Phase 2** (Weeks 3-5): Core Scheduling Engine
-- **Phase 3** (Weeks 6-8): Report Generation Workers
-- **Phase 4** (Weeks 9-10): Delivery & Email Notifications
-- **Phase 5** (Weeks 11-12): Frontend UI & Artifact Gallery
-- **Phase 6** (Weeks 13-14): Testing & Hardening
-- **Phase 7** (Weeks 15-16): Deployment & Launch
-- **Phase 8** (Post-launch): Iteration & Enhancements
-
 See `docs/plan.md` for detailed milestones.
 
 ## License
