@@ -1,0 +1,26 @@
+# Node
+node_modules/
+dist/
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Testing
+coverage/
+.nyc_output/
+
+# Build
+dist-ssr/
+*.local
+
+# OS
+.DS_Store
+Thumbs.db

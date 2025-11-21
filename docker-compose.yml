@@ -1,0 +1,135 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: reportscheduler-postgres
+    environment:
+      POSTGRES_DB: reportscheduler
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: devpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - reportscheduler
+
+  redis:
+    image: redis:7-alpine
+    container_name: reportscheduler-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - reportscheduler
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: reportscheduler-azurite
+    ports:
+      - "10000:10000"  # Blob service
+    command: azurite-blob --blobHost 0.0.0.0 --loose
+    networks:
+      - reportscheduler
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: reportscheduler-api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://dev:devpass@postgres:5432/reportscheduler
+      REDIS_URL: redis://redis:6379/0
+      AZURE_STORAGE_CONNECTION_STRING: DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+      STORAGE_CONTAINER_NAME: artifacts
+      SERVICE_BUS_CONNECTION_STRING: ""
+      JWT_SECRET: dev-secret-do-not-use-in-production
+      JWT_ISSUER: https://reportscheduler.local
+      ENVIRONMENT: local
+      LOG_LEVEL: INFO
+      CORS_ORIGINS: '["http://localhost:5173","http://localhost:3000"]'
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend/src:/app/src  # Hot reload for development
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - reportscheduler
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    container_name: reportscheduler-worker
+    environment:
+      DATABASE_URL: postgresql://dev:devpass@postgres:5432/reportscheduler
+      REDIS_URL: redis://redis:6379/0
+      AZURE_STORAGE_CONNECTION_STRING: DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+      STORAGE_CONTAINER_NAME: artifacts
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENVIRONMENT: local
+      LOG_LEVEL: INFO
+    depends_on:
+      - postgres
+      - redis
+      - azurite
+    volumes:
+      - ./backend/src:/app/src
+    networks:
+      - reportscheduler
+
+  # Scheduler service (Phase 2)
+  # scheduler:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile
+  #   container_name: reportscheduler-scheduler
+  #   environment:
+  #     DATABASE_URL: postgresql://dev:devpass@postgres:5432/reportscheduler
+  #     REDIS_URL: redis://redis:6379/0
+  #   depends_on:
+  #     - postgres
+  #     - redis
+  #   command: python -m src.scheduler.scheduler_loop
+  #   networks:
+  #     - reportscheduler
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: reportscheduler-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+      - /app/node_modules
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    networks:
+      - reportscheduler
+
+volumes:
+  postgres_data:
+
+networks:
+  reportscheduler:
+    driver: bridge

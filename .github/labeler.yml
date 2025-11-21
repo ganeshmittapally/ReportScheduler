@@ -1,0 +1,51 @@
+# PR Labeler Configuration
+# Automatically labels PRs based on changed files
+
+backend:
+  - backend/**/*
+
+frontend:
+  - frontend/**/*
+
+infrastructure:
+  - infrastructure/**/*
+
+documentation:
+  - docs/**/*
+  - '**/*.md'
+
+ci-cd:
+  - .github/workflows/**/*
+
+dependencies:
+  - backend/pyproject.toml
+  - frontend/package.json
+  - frontend/package-lock.json
+
+docker:
+  - '**/Dockerfile*'
+  - docker-compose.yml
+
+tests:
+  - backend/tests/**/*
+  - frontend/tests/**/*
+  - '**/*.test.ts'
+  - '**/*.spec.ts'
+
+api:
+  - backend/src/api/**/*
+
+database:
+  - backend/alembic/**/*
+  - backend/src/infrastructure/database/**/*
+
+cache:
+  - backend/src/infrastructure/cache/**/*
+
+workers:
+  - backend/src/workers/**/*
+  - backend/src/scheduler/**/*
+
+security:
+  - '**/.env.example'
+  - infrastructure/modules/keyvault/**/*

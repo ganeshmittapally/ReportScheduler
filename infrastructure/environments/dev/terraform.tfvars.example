@@ -1,0 +1,6 @@
+# Azure AD Tenant ID
+tenant_id = "YOUR_TENANT_ID_HERE"
+
+# Container Images (update after building and pushing your images)
+api_image    = "yourregistry.azurecr.io/reportscheduler-api:dev"
+worker_image = "yourregistry.azurecr.io/reportscheduler-worker:dev"

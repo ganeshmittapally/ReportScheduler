@@ -1,0 +1,43 @@
+# Auto-assign Configuration
+# Automatically assigns reviewers to PRs
+
+# A list of reviewers to be added to pull requests (GitHub user name)
+reviewers:
+  - # Add reviewer usernames here
+  # - username1
+  # - username2
+
+# A list of keywords to be skipped in automatic assignment
+skipKeywords:
+  - wip
+  - WIP
+  - draft
+
+# A number of reviewers added to the pull request
+numberOfReviewers: 2
+
+# A number of assignees added to the pull request
+numberOfAssignees: 1
+
+# A list of assignees to be added to pull request (GitHub user name)
+assignees:
+  - # Add assignee usernames here
+  # - username1
+
+# A list of reviewers to be added when specific files are changed
+# This is useful for code owners
+fileReviewers:
+  'backend/**':
+    - # Add backend reviewers
+  'frontend/**':
+    - # Add frontend reviewers
+  'infrastructure/**':
+    - # Add infrastructure reviewers
+  '.github/workflows/**':
+    - # Add CI/CD reviewers
+
+# Set to true to add assignees to PRs
+addAssignees: true
+
+# Set to true to add reviewers to PRs
+addReviewers: true

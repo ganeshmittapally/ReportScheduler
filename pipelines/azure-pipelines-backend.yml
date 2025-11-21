@@ -1,0 +1,238 @@
+# Azure Pipelines (Azure DevOps) - Alternative to GitHub Actions
+# This is provided as an alternative CI/CD option
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - backend/**
+    exclude:
+      - '**/*.md'
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - backend/**
+
+variables:
+  - group: reportscheduler-variables
+  - name: pythonVersion
+    value: '3.11'
+  - name: vmImageName
+    value: 'ubuntu-latest'
+
+stages:
+  - stage: Test
+    displayName: 'Test Backend'
+    jobs:
+      - job: TestJob
+        displayName: 'Run Tests'
+        pool:
+          vmImage: $(vmImageName)
+        
+        services:
+          postgres:
+            image: postgres:15
+            env:
+              POSTGRES_PASSWORD: postgres
+              POSTGRES_DB: test_db
+            ports:
+              - 5432:5432
+          
+          redis:
+            image: redis:7-alpine
+            ports:
+              - 6379:6379
+
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: $(pythonVersion)
+            displayName: 'Use Python $(pythonVersion)'
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install poetry
+              cd backend
+              poetry config virtualenvs.create false
+              poetry install --with dev
+            displayName: 'Install dependencies'
+
+          - script: |
+              cd backend
+              poetry run ruff check src/
+              poetry run black --check src/
+            displayName: 'Run linting'
+
+          - script: |
+              cd backend
+              poetry run mypy src/
+            displayName: 'Run type checking'
+
+          - script: |
+              cd backend
+              poetry run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+            displayName: 'Run tests with coverage'
+            env:
+              DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+              REDIS_URL: redis://localhost:6379/0
+              ENVIRONMENT: test
+
+          - task: PublishCodeCoverageResults@1
+            inputs:
+              codeCoverageTool: Cobertura
+              summaryFileLocation: '$(System.DefaultWorkingDirectory)/backend/coverage.xml'
+            displayName: 'Publish coverage results'
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/test-*.xml'
+              failTaskOnFailedTests: true
+            displayName: 'Publish test results'
+
+  - stage: Build
+    displayName: 'Build Docker Images'
+    dependsOn: Test
+    condition: and(succeeded(), in(variables['Build.SourceBranch'], 'refs/heads/main', 'refs/heads/develop'))
+    jobs:
+      - job: BuildJob
+        displayName: 'Build and Push Images'
+        pool:
+          vmImage: $(vmImageName)
+        
+        steps:
+          - task: Docker@2
+            displayName: 'Login to ACR'
+            inputs:
+              command: login
+              containerRegistry: 'ACR-ServiceConnection'
+
+          - task: Docker@2
+            displayName: 'Build and Push API Image'
+            inputs:
+              command: buildAndPush
+              repository: 'reportscheduler-api'
+              dockerfile: 'backend/Dockerfile'
+              containerRegistry: 'ACR-ServiceConnection'
+              tags: |
+                $(Build.SourceBranchName)
+                $(Build.SourceBranchName)-$(Build.BuildId)
+
+          - task: Docker@2
+            displayName: 'Build and Push Worker Image'
+            inputs:
+              command: buildAndPush
+              repository: 'reportscheduler-worker'
+              dockerfile: 'backend/Dockerfile.worker'
+              containerRegistry: 'ACR-ServiceConnection'
+              tags: |
+                $(Build.SourceBranchName)
+                $(Build.SourceBranchName)-$(Build.BuildId)
+
+  - stage: DeployDev
+    displayName: 'Deploy to Development'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    jobs:
+      - deployment: DeployDevJob
+        displayName: 'Deploy to Dev Environment'
+        pool:
+          vmImage: $(vmImageName)
+        environment: 'development'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Update Container App - API'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Dev'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az containerapp update \
+                        --name ca-reportscheduler-api-dev \
+                        --resource-group rg-reportscheduler-dev \
+                        --image $(ACR_LOGIN_SERVER)/reportscheduler-api:develop
+
+                - task: AzureCLI@2
+                  displayName: 'Update Container App - Worker'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Dev'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az containerapp update \
+                        --name ca-reportscheduler-worker-dev \
+                        --resource-group rg-reportscheduler-dev \
+                        --image $(ACR_LOGIN_SERVER)/reportscheduler-worker:develop
+
+                - task: AzureCLI@2
+                  displayName: 'Run Database Migrations'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Dev'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az containerapp exec \
+                        --name ca-reportscheduler-api-dev \
+                        --resource-group rg-reportscheduler-dev \
+                        --command "alembic upgrade head"
+
+  - stage: DeployProd
+    displayName: 'Deploy to Production'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployProdJob
+        displayName: 'Deploy to Prod Environment'
+        pool:
+          vmImage: $(vmImageName)
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Update Container App - API'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Prod'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az containerapp update \
+                        --name ca-reportscheduler-api-prod \
+                        --resource-group rg-reportscheduler-prod \
+                        --image $(ACR_LOGIN_SERVER)/reportscheduler-api:main
+
+                - task: AzureCLI@2
+                  displayName: 'Update Container App - Worker'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Prod'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az containerapp update \
+                        --name ca-reportscheduler-worker-prod \
+                        --resource-group rg-reportscheduler-prod \
+                        --image $(ACR_LOGIN_SERVER)/reportscheduler-worker:main
+
+                - task: AzureCLI@2
+                  displayName: 'Run Database Migrations'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Prod'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az containerapp exec \
+                        --name ca-reportscheduler-api-prod \
+                        --resource-group rg-reportscheduler-prod \
+                        --command "alembic upgrade head"

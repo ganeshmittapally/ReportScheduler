@@ -1,0 +1,153 @@
+# Azure Pipelines - Frontend CI/CD
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - frontend/**
+    exclude:
+      - '**/*.md'
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - frontend/**
+
+variables:
+  - group: reportscheduler-variables
+  - name: nodeVersion
+    value: '20'
+  - name: vmImageName
+    value: 'ubuntu-latest'
+
+stages:
+  - stage: Test
+    displayName: 'Test Frontend'
+    jobs:
+      - job: TestJob
+        displayName: 'Run Tests'
+        pool:
+          vmImage: $(vmImageName)
+
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(nodeVersion)
+            displayName: 'Install Node.js $(nodeVersion)'
+
+          - script: |
+              cd frontend
+              npm ci
+            displayName: 'Install dependencies'
+
+          - script: |
+              cd frontend
+              npm run lint
+            displayName: 'Run linting'
+
+          - script: |
+              cd frontend
+              npm run type-check
+            displayName: 'Run type checking'
+
+          - script: |
+              cd frontend
+              npm run build
+            displayName: 'Build application'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: 'frontend/dist'
+              artifact: 'frontend-dist'
+            displayName: 'Publish build artifacts'
+
+  - stage: DeployDev
+    displayName: 'Deploy to Development'
+    dependsOn: Test
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    jobs:
+      - deployment: DeployDevJob
+        displayName: 'Deploy to Dev Static Web App'
+        pool:
+          vmImage: $(vmImageName)
+        environment: 'development'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: NodeTool@0
+                  inputs:
+                    versionSpec: $(nodeVersion)
+                  displayName: 'Install Node.js $(nodeVersion)'
+
+                - checkout: self
+                  displayName: 'Checkout code'
+
+                - script: |
+                    cd frontend
+                    npm ci
+                  displayName: 'Install dependencies'
+
+                - script: |
+                    cd frontend
+                    npm run build
+                  displayName: 'Build application'
+                  env:
+                    VITE_API_BASE_URL: $(VITE_API_BASE_URL_DEV)
+
+                - task: AzureStaticWebApp@0
+                  displayName: 'Deploy to Static Web App'
+                  inputs:
+                    app_location: 'frontend'
+                    output_location: 'dist'
+                    azure_static_web_apps_api_token: $(AZURE_STATIC_WEB_APPS_API_TOKEN_DEV)
+                    skip_app_build: true
+
+  - stage: DeployProd
+    displayName: 'Deploy to Production'
+    dependsOn: Test
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployProdJob
+        displayName: 'Deploy to Prod Static Web App'
+        pool:
+          vmImage: $(vmImageName)
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: NodeTool@0
+                  inputs:
+                    versionSpec: $(nodeVersion)
+                  displayName: 'Install Node.js $(nodeVersion)'
+
+                - checkout: self
+                  displayName: 'Checkout code'
+
+                - script: |
+                    cd frontend
+                    npm ci
+                  displayName: 'Install dependencies'
+
+                - script: |
+                    cd frontend
+                    npm run build
+                  displayName: 'Build application'
+                  env:
+                    VITE_API_BASE_URL: $(VITE_API_BASE_URL_PROD)
+
+                - task: AzureStaticWebApp@0
+                  displayName: 'Deploy to Static Web App'
+                  inputs:
+                    app_location: 'frontend'
+                    output_location: 'dist'
+                    azure_static_web_apps_api_token: $(AZURE_STATIC_WEB_APPS_API_TOKEN_PROD)
+                    skip_app_build: true

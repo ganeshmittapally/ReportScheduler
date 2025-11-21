@@ -1,0 +1,286 @@
+# Azure Pipelines - Infrastructure CI/CD
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - infrastructure/**
+    exclude:
+      - '**/*.md'
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - infrastructure/**
+
+variables:
+  - group: reportscheduler-terraform
+  - name: terraformVersion
+    value: '1.6.0'
+  - name: vmImageName
+    value: 'ubuntu-latest'
+
+stages:
+  - stage: Validate
+    displayName: 'Validate Terraform'
+    jobs:
+      - job: ValidateJob
+        displayName: 'Validate Configuration'
+        pool:
+          vmImage: $(vmImageName)
+
+        steps:
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform $(terraformVersion)'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - script: |
+              cd infrastructure
+              terraform fmt -check -recursive
+            displayName: 'Terraform Format Check'
+
+          - script: |
+              cd infrastructure/environments/dev
+              terraform init -backend=false
+              terraform validate
+            displayName: 'Validate Dev Environment'
+
+          - script: |
+              cd infrastructure/environments/prod
+              terraform init -backend=false
+              terraform validate
+            displayName: 'Validate Prod Environment'
+
+  - stage: PlanDev
+    displayName: 'Plan Development'
+    dependsOn: Validate
+    condition: succeeded()
+    jobs:
+      - job: PlanDevJob
+        displayName: 'Plan Dev Infrastructure'
+        pool:
+          vmImage: $(vmImageName)
+
+        steps:
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform $(terraformVersion)'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init'
+            inputs:
+              azureSubscription: 'Azure-ServiceConnection-Dev'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd infrastructure/environments/dev
+                terraform init
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Plan'
+            inputs:
+              azureSubscription: 'Azure-ServiceConnection-Dev'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd infrastructure/environments/dev
+                terraform plan -out=tfplan \
+                  -var="tenant_id=$(AZURE_TENANT_ID)" \
+                  -var="api_image=$(ACR_LOGIN_SERVER)/reportscheduler-api:develop" \
+                  -var="worker_image=$(ACR_LOGIN_SERVER)/reportscheduler-worker:develop"
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: 'infrastructure/environments/dev/tfplan'
+              artifact: 'tfplan-dev'
+            displayName: 'Publish Terraform Plan'
+
+  - stage: ApplyDev
+    displayName: 'Apply Development'
+    dependsOn: PlanDev
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+    jobs:
+      - deployment: ApplyDevJob
+        displayName: 'Apply Dev Infrastructure'
+        pool:
+          vmImage: $(vmImageName)
+        environment: 'development'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: TerraformInstaller@0
+                  displayName: 'Install Terraform $(terraformVersion)'
+                  inputs:
+                    terraformVersion: $(terraformVersion)
+
+                - checkout: self
+                  displayName: 'Checkout code'
+
+                - task: DownloadPipelineArtifact@2
+                  inputs:
+                    artifact: 'tfplan-dev'
+                    path: 'infrastructure/environments/dev'
+                  displayName: 'Download Terraform Plan'
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Init'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Dev'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      cd infrastructure/environments/dev
+                      terraform init
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Apply'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Dev'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      cd infrastructure/environments/dev
+                      terraform apply -input=false tfplan
+                  env:
+                    ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+                    ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+                    ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+                    ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+                - task: AzureCLI@2
+                  displayName: 'Output Infrastructure Details'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Dev'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      cd infrastructure/environments/dev
+                      terraform output -json
+
+  - stage: PlanProd
+    displayName: 'Plan Production'
+    dependsOn: Validate
+    condition: succeeded()
+    jobs:
+      - job: PlanProdJob
+        displayName: 'Plan Prod Infrastructure'
+        pool:
+          vmImage: $(vmImageName)
+
+        steps:
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform $(terraformVersion)'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init'
+            inputs:
+              azureSubscription: 'Azure-ServiceConnection-Prod'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd infrastructure/environments/prod
+                terraform init
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Plan'
+            inputs:
+              azureSubscription: 'Azure-ServiceConnection-Prod'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                cd infrastructure/environments/prod
+                terraform plan -out=tfplan \
+                  -var="tenant_id=$(AZURE_TENANT_ID)" \
+                  -var="api_image=$(ACR_LOGIN_SERVER)/reportscheduler-api:main" \
+                  -var="worker_image=$(ACR_LOGIN_SERVER)/reportscheduler-worker:main"
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID_PROD)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET_PROD)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: 'infrastructure/environments/prod/tfplan'
+              artifact: 'tfplan-prod'
+            displayName: 'Publish Terraform Plan'
+
+  - stage: ApplyProd
+    displayName: 'Apply Production'
+    dependsOn: PlanProd
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: ApplyProdJob
+        displayName: 'Apply Prod Infrastructure'
+        pool:
+          vmImage: $(vmImageName)
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: TerraformInstaller@0
+                  displayName: 'Install Terraform $(terraformVersion)'
+                  inputs:
+                    terraformVersion: $(terraformVersion)
+
+                - checkout: self
+                  displayName: 'Checkout code'
+
+                - task: DownloadPipelineArtifact@2
+                  inputs:
+                    artifact: 'tfplan-prod'
+                    path: 'infrastructure/environments/prod'
+                  displayName: 'Download Terraform Plan'
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Init'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Prod'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      cd infrastructure/environments/prod
+                      terraform init
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Apply'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Prod'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      cd infrastructure/environments/prod
+                      terraform apply -input=false tfplan
+                  env:
+                    ARM_CLIENT_ID: $(ARM_CLIENT_ID_PROD)
+                    ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET_PROD)
+                    ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+                    ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+                - task: AzureCLI@2
+                  displayName: 'Output Infrastructure Details'
+                  inputs:
+                    azureSubscription: 'Azure-ServiceConnection-Prod'
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      cd infrastructure/environments/prod
+                      terraform output -json

@@ -1,0 +1,253 @@
+name: Infrastructure CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'infrastructure/**'
+      - '.github/workflows/infrastructure-ci-cd.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'infrastructure/**'
+
+env:
+  TERRAFORM_VERSION: '1.6.0'
+
+jobs:
+  validate:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Format Check
+        working-directory: infrastructure
+        run: terraform fmt -check -recursive
+
+      - name: Validate Dev Environment
+        working-directory: infrastructure/environments/dev
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate Prod Environment
+        working-directory: infrastructure/environments/prod
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+  plan-dev:
+    name: Plan Development Infrastructure
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/develop'
+    environment: development
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS_DEV }}
+
+      - name: Terraform Init
+        working-directory: infrastructure/environments/dev
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: infrastructure/environments/dev
+        env:
+          TF_VAR_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+          TF_VAR_api_image: ${{ secrets.ACR_LOGIN_SERVER }}/reportscheduler-api:develop
+          TF_VAR_worker_image: ${{ secrets.ACR_LOGIN_SERVER }}/reportscheduler-worker:develop
+        run: |
+          terraform plan -out=tfplan -input=false
+
+      - name: Upload Plan
+        uses: actions/upload-artifact@v3
+        with:
+          name: tfplan-dev
+          path: infrastructure/environments/dev/tfplan
+          retention-days: 7
+
+      - name: Comment PR with Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infrastructure/environments/dev/tfplan.txt', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan - Development\n\`\`\`terraform\n${plan}\n\`\`\``
+            });
+
+  apply-dev:
+    name: Apply Development Infrastructure
+    needs: plan-dev
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    environment:
+      name: development
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS_DEV }}
+
+      - name: Terraform Init
+        working-directory: infrastructure/environments/dev
+        run: terraform init
+
+      - name: Download Plan
+        uses: actions/download-artifact@v3
+        with:
+          name: tfplan-dev
+          path: infrastructure/environments/dev
+
+      - name: Terraform Apply
+        working-directory: infrastructure/environments/dev
+        run: terraform apply -input=false tfplan
+
+      - name: Output Infrastructure Details
+        working-directory: infrastructure/environments/dev
+        run: |
+          echo "## Development Infrastructure Outputs" >> $GITHUB_STEP_SUMMARY
+          terraform output -json | jq -r 'to_entries[] | "- **\(.key)**: \(.value.value)"' >> $GITHUB_STEP_SUMMARY
+
+  plan-prod:
+    name: Plan Production Infrastructure
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS_PROD }}
+
+      - name: Terraform Init
+        working-directory: infrastructure/environments/prod
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: infrastructure/environments/prod
+        env:
+          TF_VAR_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+          TF_VAR_api_image: ${{ secrets.ACR_LOGIN_SERVER }}/reportscheduler-api:main
+          TF_VAR_worker_image: ${{ secrets.ACR_LOGIN_SERVER }}/reportscheduler-worker:main
+        run: |
+          terraform plan -out=tfplan -input=false
+
+      - name: Upload Plan
+        uses: actions/upload-artifact@v3
+        with:
+          name: tfplan-prod
+          path: infrastructure/environments/prod/tfplan
+          retention-days: 7
+
+      - name: Comment PR with Plan
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infrastructure/environments/prod/tfplan.txt', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan - Production\n\`\`\`terraform\n${plan}\n\`\`\``
+            });
+
+  apply-prod:
+    name: Apply Production Infrastructure
+    needs: plan-prod
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS_PROD }}
+
+      - name: Terraform Init
+        working-directory: infrastructure/environments/prod
+        run: terraform init
+
+      - name: Download Plan
+        uses: actions/download-artifact@v3
+        with:
+          name: tfplan-prod
+          path: infrastructure/environments/prod
+
+      - name: Terraform Apply
+        working-directory: infrastructure/environments/prod
+        run: terraform apply -input=false tfplan
+
+      - name: Output Infrastructure Details
+        working-directory: infrastructure/environments/prod
+        run: |
+          echo "## Production Infrastructure Outputs" >> $GITHUB_STEP_SUMMARY
+          terraform output -json | jq -r 'to_entries[] | "- **\(.key)**: \(.value.value)"' >> $GITHUB_STEP_SUMMARY
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: infrastructure-v${{ github.run_number }}
+          release_name: Infrastructure Release v${{ github.run_number }}
+          body: |
+            Infrastructure deployment to production
+            - Terraform version: ${{ env.TERRAFORM_VERSION }}
+            - Commit: ${{ github.sha }}
+          draft: false
+          prerelease: false
